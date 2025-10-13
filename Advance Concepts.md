@@ -1134,7 +1134,7 @@ Monitoring stack became fully reproducible.
 
 Any configuration changes went through code review, improving reliability and compliance.
 
-R – Result / Outcome
+### R – Result / Outcome
 
 Alert volume reduced by 70% → developers now trust alerts.
 
