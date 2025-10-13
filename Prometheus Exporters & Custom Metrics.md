@@ -251,3 +251,99 @@ By completing this roadmap, you will have:
 - ✅ Optimized metrics for production scale
 - ✅ Created comprehensive monitoring dashboards
 - ✅ Implemented multi-layer alerting strategies
+
+## Case Study (STAR Format): Multi-Layer Observability Implementation Using Prometheus and Grafana
+S – Situation
+
+At my internship/project, our team was responsible for maintaining a set of microservices running on AWS EC2 and Docker containers.
+We had limited visibility into system performance and no centralized alerting.
+Developers often noticed issues like high CPU usage or container restarts only after users reported problems — meaning we were reacting after failures instead of preventing them.
+
+Management wanted a proactive monitoring and alerting system that could cover:
+
+Host-level metrics
+
+Container performance
+
+Application-level metrics
+
+Endpoint uptime
+
+Database health
+and send alerts automatically before service degradation occurred.
+
+T – Task
+
+I was assigned to design and implement a unified observability stack that:
+
+Collects metrics across infrastructure, containers, and applications.
+
+Visualizes performance in Grafana dashboards.
+
+Sends automated alerts through Alertmanager for proactive incident response.
+
+The challenge was to make it modular, scalable, and easily configurable — something the team could extend later to Kubernetes.
+
+A – Action
+
+I approached it in multiple phases using the Prometheus-Grafana-Alertmanager stack:
+
+System Monitoring (Node Exporter):
+
+Deployed Node Exporter on each EC2 instance to collect CPU, memory, disk, and network metrics.
+
+Configured Prometheus to scrape these metrics and built baseline dashboards in Grafana.
+
+Set up alerts for CPU > 80% and memory > 90%.
+
+Container Monitoring (cAdvisor):
+
+Integrated cAdvisor to capture per-container resource utilization and runtime metrics.
+
+Tuned Prometheus jobs for auto-discovery of container targets.
+
+Endpoint Monitoring (Blackbox Exporter):
+
+Deployed the Blackbox Exporter to monitor HTTP and TCP endpoints of internal APIs.
+
+Configured latency and availability alerts to detect downtime proactively.
+
+Database Metrics (Redis Exporter):
+
+Integrated Redis Exporter to capture cache hit/miss ratio, memory usage, and connection stats.
+
+Application Metrics (Custom Exporter):
+
+Instrumented a sample Flask application using the prometheus_client library to expose /metrics.
+
+Tracked custom metrics like total requests and error rates.
+
+Alerting & Visualization:
+
+Configured Alertmanager for CPU, memory, and service availability alerts with Slack notifications.
+
+Designed modular Grafana dashboards — grouped by system, container, and application layers.
+
+Optimization:
+
+Implemented recording rules to pre-compute heavy queries and reduced label cardinality to improve Prometheus query performance.
+
+R – Result
+
+✅ The new observability stack provided end-to-end visibility into system health.
+✅ Mean time to detect (MTTD) issues dropped by over 60%, as alerts triggered within seconds of anomalies.
+✅ The team could now predict performance degradation before it impacted users.
+✅ Grafana dashboards became a single pane of glass for developers and operations to debug faster.
+✅ The architecture was reusable — later integrated with Kubernetes using Prometheus service discovery.
+
+🧠 Key Talking Points (to say naturally in interview)
+
+“I built a modular monitoring stack using Prometheus, Grafana, and Alertmanager.”
+
+“Each exporter (Node, cAdvisor, Blackbox, Redis, and custom app) covered a specific layer — from infrastructure to application.”
+
+“I focused on proactive alerting — not just visualization.”
+
+“This experience taught me how to design scalable observability pipelines and optimize Prometheus for large environments.”
+
+“As a result, we achieved faster detection, reduced noise, and improved reliability.”
