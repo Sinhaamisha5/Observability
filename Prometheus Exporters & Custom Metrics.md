@@ -252,7 +252,7 @@ By completing this roadmap, you will have:
 - ✅ Created comprehensive monitoring dashboards
 - ✅ Implemented multi-layer alerting strategies
 
-## # 🎯 STAR Case Study: Multi-Layer Observability Implementation Using Prometheus and Grafana
+##  🎯 STAR Case Study: Multi-Layer Observability Implementation Using Prometheus and Grafana
 
 ## Interview Question Variations This Answers:
 - "Tell me about a monitoring system you've built from scratch"
