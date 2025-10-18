@@ -1,4 +1,4 @@
-# 🧭 Monitoring & Alerting Architecture for 200+ Microservices
+# GOAL 1 🧭 Monitoring & Alerting Architecture for 200+ Microservices
 
 This project provides a complete **Monitoring & Alerting architecture** built with:
 

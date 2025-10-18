@@ -1,4 +1,4 @@
-# 📊 Metrics & Exporters Hands-On Roadmap
+# Goal 2 📊 Metrics & Exporters Hands-On Roadmap
 
 **Goal 2 — Master Prometheus Exporters & Custom Metrics**
 
