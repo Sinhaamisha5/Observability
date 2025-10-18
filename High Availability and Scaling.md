@@ -996,7 +996,7 @@ services:
     container_name: prom-shard-0
     command:
       - '--config.file=/etc/prometheus
-
+```
 
 # 🚀 STAR Case Study: Scaling Prometheus Monitoring to 10,000+ Targets
 
