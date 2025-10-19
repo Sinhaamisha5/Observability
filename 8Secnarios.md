@@ -773,3 +773,1643 @@ spec:
       - name: prometheus
         # ... existing prometheus config
       - name: thanos-sidecar
+        image: quay.io/thanos/thanos:v0.32.0
+        args:
+          - sidecar
+          - --tsdb.path=/prometheus
+          - --prometheus.url=http://localhost:9090
+          - --objstore.config-file=/etc/thanos/objstore.yml
+        volumeMounts:
+          - name: prometheus-storage
+            mountPath: /prometheus
+```
+
+### **Result**
+The emergency recovery and long-term improvements delivered comprehensive resilience:
+
+**Immediate Recovery Success:**
+- **Prometheus restored in 8 minutes** from crash detection to full operational status
+- **Zero data loss** - all 15 minutes of critical incident metrics preserved via WAL replay
+- **Incident investigation resumed** - team immediately accessed full metrics timeline
+- **Root cause found faster** - with metrics restored, we identified API gateway issue in 12 additional minutes
+
+**Recovery Metrics:**
+- WAL replay time: 13 seconds for 15 minutes of data
+- TSDB integrity: 100% - no corrupted blocks
+- Query response time post-recovery: <500ms (vs 5s+ before crash)
+- All 247 alert rules reloaded successfully
+
+**Long-term Reliability Improvements:**
+- **Zero Prometheus crashes** in 9 months following implementation
+- **Memory headroom increased by 100%** (6Gi request, 12Gi limit)
+- **Query performance improved 60%** through pre-computed recording rules
+- **HA setup deployed** - if one Prometheus crashes, the second continues uninterrupted
+
+**Operational Impact:**
+- **MTTR for Prometheus issues reduced from 45 minutes to 8 minutes** (documented runbook)
+- **Query governance prevented 23 expensive queries** from overwhelming system
+- **Meta-monitoring caught 5 potential OOM situations** before they caused crashes
+- **Incident response confidence increased** - team knows monitoring won't fail during critical moments
+
+**Cost & Storage Optimization:**
+- Thanos reduced primary storage costs by 40% through offloading to object storage
+- Retention policy optimized: 15 days high-res, 90 days downsampled, 1 year aggregated
+- PVC expansion automated - no manual intervention needed for growth
+
+**Knowledge Sharing & Documentation:**
+- **Emergency runbook created** and tested quarterly in disaster recovery drills
+- **Training conducted** for 12 SRE team members on Prometheus recovery procedures
+- **Postmortem shared company-wide** - 85 engineers read the incident report
+- **Backup automation implemented** - WAL backed up to S3 every 4 hours
+
+**Prevention Statistics:**
+- Meta-alerts fired 8 times in 9 months, preventing potential crashes:
+  - 5 high memory warnings → queries optimized before OOM
+  - 2 slow query alerts → dashboards refactored
+  - 1 WAL growth warning → retention adjusted
+  
+**Key Learnings Documented:**
+
+1. **Always backup WAL first** - it's your only copy of recent uncompacted data
+2. **Monitoring systems need monitoring** - meta-observability is not optional
+3. **Resource limits must account for spike scenarios** - steady-state sizing isn't enough
+4. **Query governance is critical** - uncontrolled queries can kill Prometheus
+5. **HA setup is insurance** - the cost is minimal compared to incident impact
+6. **Test recovery procedures regularly** - we now run quarterly disaster recovery drills
+
+**Architectural Evolution:**
+```
+Before: Single Prometheus → Crash = Complete Blindness
+After:  HA Prometheus Pair + Thanos + Meta-Monitoring = Resilient Observability
+```
+
+**Business Impact:**
+- **Prevented estimated $120K in incident costs** (6 incidents avoided × $20K average cost)
+- **Reduced mean incident detection time by 40%** (monitoring always available)
+- **Increased stakeholder confidence** - monitoring is now considered "production-grade"
+- **Enabled faster feature velocity** - teams trust they can debug issues with reliable metrics
+
+**Cultural Shift:**
+This incident catalyzed a fundamental change in how we approach monitoring:
+- Monitoring infrastructure now receives same rigor as production services
+- All monitoring components have defined SLOs (Prometheus uptime: 99.95%)
+- Quarterly chaos engineering exercises include "kill Prometheus" scenario
+- Monitoring resilience is a standard interview question for SRE candidates
+
+Six months after this incident, we faced another major outage. This time, Prometheus remained stable throughout, and having complete metrics data helped us resolve the issue 65% faster than similar historical incidents. The engineering team explicitly credited the Prometheus improvements for the rapid resolution.
+
+---
+
+## Scenario 5: Reduce Monitoring Cost by 40%
+
+### **Situation**
+Our AWS bill had grown from $8,000/month to $15,000/month over six months, with monitoring infrastructure (Prometheus, Grafana, Loki, and associated storage) consuming $5,000 of that. The CFO mandated a 40% reduction in monitoring costs ($2,000/month savings) without degrading service visibility or reliability. The challenge was that every team claimed "all their metrics are critical," and there was no clear inventory of what was actually being used. We had multiple Prometheus instances across regions, unclear retention policies, and no governance around metric creation. Leadership gave us 30 days to present a cost reduction plan with implementation timeline.
+
+### **Task**
+As the lead SRE, I was responsible for:
+- Auditing the entire monitoring stack to identify cost drivers
+- Reducing costs by 40% ($2,000/month) without impacting critical observability
+- Implementing governance to prevent cost creep in the future
+- Maintaining or improving our SLO compliance (currently 99.9%)
+- Getting buy-in from 8 engineering teams who would be affected by changes
+
+### **Action**
+I executed a systematic cost optimization program with data-driven decision making:
+
+**Step 1: Comprehensive Cost & Metrics Audit (Week 1)**
+
+**A. Identified cost breakdown:**
+```bash
+# Query Prometheus for cardinality by metric name
+curl -s http://prometheus:9090/api/v1/status/tsdb | \
+  jq -r '.data.seriesCountByMetricName[] | "\(.name): \(.value)"' | \
+  sort -t: -k2 -nr | head -50 > metrics_cardinality.txt
+```
+
+**Cost Analysis Results:**
+```
+Storage costs: $2,800/month (56%)
+- Prometheus TSDB: $1,500
+- Loki logs: $800
+- Thanos long-term storage: $500
+
+Compute costs: $1,600/month (32%)
+- Prometheus pods: $900
+- Grafana: $300
+- Exporters: $400
+
+Network costs: $600/month (12%)
+- Cross-region federation
+- Metrics ingestion bandwidth
+```
+
+**B. Metrics inventory analysis:**
+```
+Total active series: 2.3M
+Top 10 metrics = 40% of cardinality:
+- kube_pod_container_status_* (350K series)
+- node_network_transmit_bytes (280K series)
+- http_requests_total (with high-cardinality labels) (240K series)
+- go_memstats_* (from 120 services) (180K series)
+- custom_business_metrics_* (poorly labeled) (160K series)
+```
+
+**C. Usage analysis:**
+```bash
+# Query Prometheus query logs (enabled earlier)
+cat /prometheus/query.log | \
+  jq -r '.query' | \
+  sort | uniq -c | sort -rn | head -100
+```
+
+**Key Finding:** 60% of stored metrics were NEVER queried in dashboards or alerts!
+
+**Step 2: Categorized Metrics by Value (Week 1)**
+
+Created metric tiers:
+```
+Tier 1 - Critical (keep full retention):
+- SLI/SLO metrics (error rate, latency, availability)
+- Resource metrics (CPU, memory, disk for production)
+- Business metrics (revenue, transactions, user activity)
+Total: 400K series (17% of total)
+
+Tier 2 - Important (reduce retention/frequency):
+- Detailed HTTP metrics
+- Per-pod network stats
+- Application-specific metrics
+Total: 800K series (35% of total)
+
+Tier 3 - Nice-to-have (aggressive reduction):
+- Debug metrics
+- Go/JVM runtime stats for non-critical services
+- Highly detailed Kubernetes state
+Total: 600K series (26% of total)
+
+Tier 4 - Unused (drop completely):
+- Metrics never queried in 90 days
+- Duplicate metrics from multiple exporters
+- Deprecated metrics from old services
+Total: 500K series (22% of total)
+```
+
+**Step 3: Implementation - Drop Unused Metrics (Week 2)**
+
+**A. Drop metrics via relabeling (20% savings - $1,000/month):**
+```yaml
+# prometheus.yml
+global:
+  scrape_interval: 30s
+
+scrape_configs:
+  - job_name: 'kubernetes-pods'
+    metric_relabel_configs:
+      # Drop Go runtime metrics for non-critical services
+      - source_labels: [__name__, job]
+        regex: 'go_(gc|memstats|threads).*;(?!critical-service).*'
+        action: drop
+      
+      # Drop verbose kube-state-metrics
+      - source_labels: [__name__]
+        regex: 'kube_pod_container_status_(waiting|terminated).*'
+        action: drop
+      
+      # Drop high-cardinality container metrics
+      - source_labels: [__name__]
+        regex: 'container_network_tcp_usage_total|container_network_udp_usage_total'
+        action: drop
+      
+      # Drop unused HTTP path metrics (keep aggregated only)
+      - source_labels: [__name__, path]
+        regex: 'http_request_duration_seconds;/api/v1/users/[0-9]+'
+        action: drop
+      
+      # Drop debug metrics
+      - source_labels: [__name__]
+        regex: '.*_debug_.*'
+        action: drop
+```
+
+**B. Created metric governance policy:**
+```yaml
+# metric_standards.yml - enforced via admission controller
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metric-standards
+data:
+  rules: |
+    # All metrics must follow naming convention
+    - pattern: '^[a-z_]+_[a-z_]+_(total|seconds|bytes|ratio)
+      required: true
+    
+    # Limit label cardinality
+    - labels: 
+        max_cardinality: 1000
+        prohibited_labels: ['user_id', 'session_id', 'request_id']
+    
+    # Require justification for new high-cardinality metrics
+    - cardinality_threshold: 10000
+      requires_approval: true
+```
+
+**Metrics Eliminated:**
+- Reduced from 2.3M series to 1.8M series (500K dropped)
+- Storage reduced by 22%
+
+**Step 4: Optimize Scrape Frequency (Week 2)**
+
+**Changed scrape intervals based on metric importance:**
+```yaml
+# High-priority services: keep 30s
+- job_name: 'critical-services'
+  scrape_interval: 30s
+  static_configs:
+    - targets: ['api-gateway:8080', 'payment-service:8080']
+
+# Medium-priority: 60s → 2min (10% savings)
+- job_name: 'standard-services'
+  scrape_interval: 2m
+  static_configs:
+    - targets: ['user-service:8080', 'notification-service:8080']
+
+# Low-priority batch jobs: 5min (5% savings)
+- job_name: 'batch-jobs'
+  scrape_interval: 5m
+  static_configs:
+    - targets: ['etl-service:8080', 'report-generator:8080']
+```
+
+**Savings:** Reduced ingestion rate by 15%, saving $300/month in compute
+
+**Step 5: Implement Retention Tiers with Thanos (Week 3)**
+
+**A. Deployed aggressive downsampling:**
+```yaml
+# thanos-compact.yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-compact
+spec:
+  template:
+    spec:
+      containers:
+      - name: thanos-compact
+        args:
+          - compact
+          - --data-dir=/var/thanos/compact
+          - --objstore.config-file=/etc/thanos/objstore.yml
+          # Aggressive retention policy
+          - --retention.resolution-raw=15d      # Was: 30d
+          - --retention.resolution-5m=90d       # Was: 180d
+          - --retention.resolution-1h=365d      # Was: 730d
+          - --delete-delay=0h                   # Immediate deletion
+          - --compact.concurrency=3
+```
+
+**B. Reduced Prometheus local retention:**
+```yaml
+# prometheus-statefulset.yml
+args:
+  - '--storage.tsdb.retention.time=7d'    # Was: 15d
+  - '--storage.tsdb.retention.size=40GB'  # Was: 80GB
+```
+
+**Storage Savings:**
+- Prometheus PVC: 80GB → 40GB per instance = $180/month saved
+- Thanos S3 storage: 50% reduction = $250/month saved
+- Total: $430/month (9% of total costs)
+
+**Step 6: Implement Federation for Multi-Region (Week 3)**
+
+**Problem:** We had full Prometheus in each of 3 regions, duplicating centralized metrics.
+
+**Solution:** Regional Prometheus federates only critical metrics to central:
+```yaml
+# central-prometheus.yml
+scrape_configs:
+  - job_name: 'federate-us-east'
+    honor_labels: true
+    metrics_path: '/federate'
+    params:
+      'match[]':
+        # Only federate SLI metrics
+        - '{__name__=~".*_total"}'
+        - '{__name__=~".*_bucket"}'
+        - '{__name__=~"up|http_requests_total|http_request_duration_seconds.*"}'
+        - '{job=~"critical-.*"}'
+    static_configs:
+      - targets: ['prometheus-us-east:9090']
+    metric_relabel_configs:
+      # Drop high-frequency metrics
+      - source_labels: [__name__]
+        regex: '.*_milliseconds_.*'
+        action: drop
+
+  - job_name: 'federate-us-west'
+    # ... similar config
+
+  - job_name: 'federate-eu-west'
+    # ... similar config
+```
+
+**Savings:**
+- Reduced central Prometheus size by 60%
+- Network egress costs: -$400/month (10% savings)
+
+**Step 7: Optimize Loki Log Retention (Week 4)**
+
+**A. Implemented log sampling for verbose services:**
+```yaml
+# promtail-config.yml
+scrape_configs:
+  - job_name: kubernetes-pods
+    pipeline_stages:
+      # Sample debug logs (keep only 10%)
+      - match:
+          selector: '{level="debug"}'
+          action: drop
+          drop_counter_reason: "debug_sampling"
+          # Only 10% pass through
+          stages:
+            - sampling:
+                rate: 0.1
+      
+      # Drop excessively verbose logs
+      - match:
+          selector: '{app="chatty-service"}'
+          stages:
+            - sampling:
+                rate: 0.2  # Keep only 20%
+```
+
+**B. Reduced Loki retention:**
+```yaml
+# loki-config.yml
+limits_config:
+  retention_period: 15d  # Was: 30d
+  
+table_manager:
+  retention_deletes_enabled: true
+  retention_period: 360h  # 15 days
+```
+
+**Loki Savings:**
+- Storage: $800/month → $450/month = $350/month saved (7% total)
+
+**Step 8: Right-Size Compute Resources (Week 4)**
+
+**Analyzed actual resource usage:**
+```bash
+# Get actual CPU/Memory usage over 30 days
+kubectl top pods -n monitoring --containers
+```
+
+**Results showed massive over-provisioning:**
+```
+Prometheus: Requested 4 CPU / 8Gi, Using 1.2 CPU / 4Gi (70% waste)
+Grafana: Requested 2 CPU / 4Gi, Using 0.3 CPU / 1Gi (80% waste)
+Exporters: Requested 0.5 CPU / 512Mi each, Using 0.05 CPU / 128Mi (90% waste)
+```
+
+**Right-sized resources:**
+```yaml
+# prometheus-statefulset.yml (per instance)
+resources:
+  requests:
+    cpu: 2000m      # Was: 4000m
+    memory: 5Gi     # Was: 8Gi
+  limits:
+    cpu: 3000m
+    memory: 7Gi     # Headroom for bursts
+
+# grafana-deployment.yml
+resources:
+  requests:
+    cpu: 500m       # Was: 2000m
+    memory: 1.5Gi   # Was: 4Gi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+```
+
+**Compute Savings:**
+- EC2/EKS costs reduced: $1,600/month → $1,100/month = $500/month saved (10% total)
+
+**Step 9: Governance & Monitoring (Ongoing)**
+
+**A. Created cost dashboard:**
+```json
+{
+  "title": "Monitoring Cost Dashboard",
+  "panels": [
+    {
+      "title": "Estimated Monthly Cost",
+      "targets": [{
+        "expr": "(prometheus_tsdb_storage_blocks_bytes / 1024/1024/1024 * 0.023) + (sum(kube_pod_container_resource_requests{namespace='monitoring'}) * 730 * 0.0416)"
+      }]
+    },
+    {
+      "title": "Cost per Active Series",
+      "targets": [{
+        "expr": "(total_monitoring_cost) / (prometheus_tsdb_head_series)"
+      }]
+    },
+    {
+      "title": "Series Growth Rate",
+      "targets": [{
+        "expr": "deriv(prometheus_tsdb_head_series[7d])"
+      }]
+    }
+  ]
+}
+```
+
+**B. Implemented automated cost alerts:**
+```yaml
+groups:
+  - name: cost_governance
+    rules:
+    - alert: MonitoringCostIncreasing
+      expr: |
+        increase(prometheus_tsdb_head_series[7d]) > 100000
+      annotations:
+        summary: "Metrics cardinality growing >100K series/week"
+        
+    - alert: NewHighCardinalityMetric
+      expr: |
+        count by(__name__) (count by(__name__, job) (up)) > 1000
+      annotations:
+        summary: "New metric {{ $labels.__name__ }} has >1000 series"
+```
+
+**C. Created monthly cost review process:**
+- Engineering leads review top 10 cost-driving metrics
+- New metrics >10K cardinality require architecture review
+- Quarterly "cost optimization sprints"
+
+### **Result**
+The optimization program delivered beyond the target with sustained improvements:
+
+**Cost Reduction Achieved:**
+```
+Previous monthly cost: $5,000
+Target reduction (40%): -$2,000
+Actual reduction: -$2,280 (45.6%)
+New monthly cost: $2,720
+
+Breakdown of savings:
+- Drop unused metrics: -$1,000/month (20%)
+- Scrape frequency optimization: -$300/month (6%)
+- Storage retention tiers: -$430/month (9%)
+- Federation strategy: -$400/month (8%)
+- Loki optimization: -$350/month (7%)
+- Right-sized compute: -$500/month (10%)
+= Total: -$2,980/month potential
+
+Actual realized: -$2,280/month (some overlap)
+```
+
+**Performance & Reliability Maintained:**
+- **SLO compliance: 99.9% → 99.93%** (actually improved)
+- **Query performance: same or better** (less data to scan)
+- **Alert coverage: 100% maintained** (all critical alerts preserved)
+- **Dashboard functionality: 100%** (no user-facing degradation)
+
+**Efficiency Improvements:**
+- Metrics per dollar: 845 series/$ → 1,837 series/$ (+118% efficiency)
+- Storage utilization: 60% → 85% (reduced waste)
+- Compute utilization: 25% → 70% (right-sizing)
+- Query latency: 2.3s → 1.7s avg (-26% faster due to less data)
+
+**Operational Benefits:**
+- **Reduced Prometheus memory pressure by 35%** - more stable operations
+- **Faster TSDB compaction** - 45min → 15min (less data to process)
+- **Backup/restore time reduced by 50%** - smaller datasets
+- **Simplified troubleshooting** - less noise in metrics
+
+**Governance Impact:**
+- **Prevented 380K new unnecessary series** in 6 months post-implementation
+- **Cost review meetings caught 12 metric explosions** before they impacted budget
+- **Engineering teams self-police metrics** - cultural shift to "metrics are not free"
+- **Reduced alert fatigue by 30%** - fewer noisy, unused metrics
+
+**Long-term Sustainability:**
+```
+Month 1: -$2,280 savings
+Month 3: -$2,400 savings (governance preventing growth)
+Month 6: -$2,550 savings (continuous optimization)
+Month 12: -$2,700 savings (culture change embedded)
+
+12-month total savings: ~$30,000
+```
+
+**Strategic Wins:**
+- **CFO confidence restored** - monitoring seen as cost-conscious
+- **Enabled budget reallocation** - $2,000/month freed for feature development
+- **Set precedent** - other infrastructure teams adopted similar methodology
+- **Improved team focus** - engineers monitor what matters, not everything
+
+**Knowledge Sharing:**
+- **Created "Metrics Cost Optimization Playbook"** - adopted by 3 other companies in peer network
+- **Presented at internal engineering summit** - 120 attendees
+- **Published blog post** - 5K+ views, referenced by 8 other organizations
+- **Standardized approach** - now part of onboarding for new services
+
+**Unexpected Benefits:**
+1. **Faster incident response** - less noise made it easier to find relevant metrics
+2. **Better dashboard design** - teams focused on what they actually needed
+3. **Improved data quality** - fewer metrics meant better labeling and documentation
+4. **Reduced cognitive load** - engineers not overwhelmed by metric choices
+
+**Key Learnings Documented:**
+1. **60% of metrics are never used** - ruthless auditing uncovers massive waste
+2. **Teams claim everything is critical until shown usage data** - data drives hard conversations
+3. **Governance must be automated** - manual reviews don't scale
+4. **Cost visibility changes behavior** - dashboards showing $/metric made teams accountable
+5. **Start with retention, not collection** - easier to extend than to take away
+
+**Prevention of Cost Creep:**
+- Monthly automated cost reports to engineering leads
+- Metrics cardinality budget per team (soft limits with alerts)
+- Architecture review required for >50K series from any single service
+- Cost-awareness training for all engineers touching metrics
+
+**Follow-up Actions (6 Months Later):**
+- Saved costs reinvested in:
+  - Tempo distributed tracing (previously "too expensive")
+  - Grafana Enterprise for advanced features
+  - Training budget for SRE certifications
+- Cost reduction model replicated for:
+  - CI/CD infrastructure (-35% costs)
+  - Development environments (-28% costs)
+  - Log aggregation (-40% costs)
+
+**Executive Summary for Leadership:**
+> "We reduced monitoring costs by 45.6% ($2,280/month, $27K annually) while actually improving reliability (99.9% → 99.93% SLO). The optimization eliminated unused metrics (500K series dropped), right-sized infrastructure, and implemented governance preventing future cost growth. The methodology is now company standard for infrastructure cost optimization."
+
+This project transformed monitoring from a "necessary expensive" to a "lean, value-driven" capability. Six months later, when we needed to add comprehensive distributed tracing, we funded it entirely from the monitoring savings - gaining new capability at zero incremental cost.
+
+---
+
+## Scenario 6: Unified Observability Stack Migration
+
+### **Situation**
+Our company had grown through multiple acquisitions over 3 years, resulting in a fragmented observability landscape. We were running three different stacks simultaneously: the original Prometheus + ELK (Elasticsearch, Logstash, Kibana) + Jaeger setup from the founding team, a Datadog implementation from an acquired company, and a Splunk deployment from enterprise customers' requirements. This created multiple problems: engineers had to learn 3-4 different query languages, incident response required jumping between 4 different UIs, costs were spiraling ($18K/month total), and correlation between metrics, logs, and traces was nearly impossible. The CTO mandated unification to a single observability platform within 90 days to reduce complexity, cost, and improve mean time to resolution (MTTR) which was averaging 52 minutes.
+
+### **Task**
+As the Senior SRE leading the observability team, I was responsible for:
+- Designing and executing migration to unified stack (Prometheus + Loki + Tempo in Grafana)
+- Ensuring zero data loss during migration, especially for compliance-regulated logs
+- Maintaining service reliability (no degradation during migration)
+- Achieving 30% cost reduction while improving capabilities
+- Retraining 65 engineers across 8 teams on new tooling
+- Decommissioning legacy systems (ELK, Jaeger, Datadog, Splunk) safely
+
+### **Action**
+I executed a phased migration strategy with extensive validation at each step:
+
+**Phase 1: Assessment & Planning (Week 1-2)**
+
+**A. Current State Documentation:**
+```
+Prometheus (metrics):
+- 3 separate Prometheus instances (one per product line)
+- 1.8M active series total
+- 15-day retention, no long-term storage
+- 47 Grafana dashboards, 180 alert rules
+
+ELK Stack (logs):
+- Elasticsearch: 8TB data, 600GB/day ingestion
+- 45-day retention
+- 12 Kibana dashboards, custom scripts for log analysis
+- Heavy reliance on Elasticsearch queries in runbooks
+
+Jaeger (traces):
+- 150K spans/minute
+- 7-day retention
+- Minimal adoption (only 3 services instrumented)
+
+Datadog (acquired company):
+- 25 services sending metrics + logs
+- $4,500/month cost
+- 80 custom dashboards (need migration)
+
+Splunk (compliance):
+- Audit logs only
+- $3,200/month
+- 90-day retention for regulatory requirements
+```
+
+**B. Target Architecture Design:**
+```
+Unified Stack (Grafana):
+├── Prometheus (metrics)
+│   ├── HA pair per region
+│   └── Thanos for long-term storage
+├── Loki (logs)
+│   ├── Distributed deployment
+│   └── S3 backend for 90-day retention
+├── Tempo (traces)
+│   ├── Receivers: Jaeger, OTLP, Zipkin
+│   └── S3 backend for 30-day retention
+└── Grafana (visualization)
+    ├── Single pane of glass
+    ├── Unified auth (SSO)
+    └── Correlated data (click metric → see logs → see traces)
+```
+
+**C. Risk Analysis & Mitigation:**
+```
+Risk 1: Data loss during migration
+Mitigation: Parallel run for 2 weeks, automated validation
+
+Risk 2: Performance degradation
+Mitigation: Gradual rollout, real-time monitoring
+
+Risk 3: User adoption failure
+Mitigation: Training program, documentation, champions network
+
+Risk 4: Compliance violation (lost audit logs)
+Mitigation: Extended archive period, legal review
+
+Risk 5: Alert gaps during cutover
+Mitigation: Duplicate alerts in both systems during transition
+```
+
+**Phase 2: Deploy New Stack (Week 3-5)**
+
+**A. Deployed Loki for Log Aggregation:**
+```yaml
+# loki-distributed.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+data:
+  loki.yaml: |
+    auth_enabled: false
+    
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+    
+    distributor:
+      ring:
+        kvstore:
+          store: consul
+          prefix: loki/distributors/
+          consul:
+            host: consul:8500
+    
+    ingester:
+      lifecycler:
+        ring:
+          kvstore:
+            store: consul
+            prefix: loki/ingesters/
+          replication_factor: 3
+        num_tokens: 512
+      chunk_idle_period: 30m
+      chunk_block_size: 262144
+      max_transfer_retries: 0
+    
+    schema_config:
+      configs:
+      - from: 2024-01-01
+        store: boltdb-shipper
+        object_store: s3
+        schema: v11
+        index:
+          prefix: loki_index_
+          period: 24h
+    
+    storage_config:
+      boltdb_shipper:
+        active_index_directory: /loki/index
+        shared_store: s3
+        cache_location: /loki/cache
+      aws:
+        s3: s3://my-loki-bucket/loki
+        region: us-east-1
+        sse_encryption: true
+    
+    limits_config:
+      retention_period: 90d  # Compliance requirement
+      enforce_metric_name: false
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      ingestion_rate_mb: 10
+      ingestion_burst_size_mb: 20
+    
+    chunk_store_config:
+      max_look_back_period: 90d
+    
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 2160h  # 90 days
+    
+    compactor:
+      working_directory: /loki/compactor
+      shared_store: s3
+      compaction_interval: 5m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150
+```
+
+**B. Deployed Promtail to Replace Logstash:**
+```yaml
+# promtail-daemonset.yml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: logging
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+    spec:
+      serviceAccountName: promtail
+      containers:
+      - name: promtail
+        image: grafana/promtail:2.9.0
+        args:
+          - -config.file=/etc/promtail/promtail.yaml
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: config
+          mountPath: /etc/promtail
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: positions
+          mountPath: /run/promtail
+        securityContext:
+          privileged: true
+          runAsUser: 0
+      volumes:
+      - name: config
+        configMap:
+          name: promtail-config
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: positions
+        hostPath:
+          path: /run/promtail
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: logging
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+    
+    positions:
+      filename: /run/promtail/positions.yaml
+    
+    clients:
+      - url: http://loki-gateway/loki/api/v1/push
+        tenant_id: default
+    
+    scrape_configs:
+      # Kubernetes pod logs
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        pipeline_stages:
+          - docker: {}
+          - labels:
+              namespace:
+              pod:
+              container:
+          - match:
+              selector: '{namespace="prod"}'
+              stages:
+                - json:
+                    expressions:
+                      level: level
+                      msg: message
+                      trace_id: trace_id
+          - labels:
+              level:
+          - output:
+              source: msg
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+```
+
+**C. Deployed Tempo for Distributed Tracing:**
+```yaml
+# tempo-distributed.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+      log_level: info
+    
+    distributor:
+      receivers:
+        jaeger:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:14250
+            thrift_http:
+              endpoint: 0.0.0.0:14268
+            thrift_compact:
+              endpoint: 0.0.0.0:6831
+            thrift_binary:
+              endpoint: 0.0.0.0:6832
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+        opencensus:
+          endpoint: 0.0.0.0:55678
+        zipkin:
+          endpoint: 0.0.0.0:9411
+    
+    ingester:
+      trace_idle_period: 10s
+      max_block_bytes: 1_000_000
+      max_block_duration: 5m
+    
+    compactor:
+      compaction:
+        block_retention: 720h  # 30 days
+    
+    storage:
+      trace:
+        backend: s3
+        s3:
+          bucket: my-tempo-bucket
+          endpoint: s3.amazonaws.com
+          region: us-east-1
+        pool:
+          max_workers: 100
+          queue_depth: 10000
+    
+    overrides:
+      per_tenant_override_config: /conf/overrides.yaml
+```
+
+**D. Configured Grafana Unified Data Sources:**
+```yaml
+# grafana-datasources.yml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: tempo
+      
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki-gateway:3100
+        jsonData:
+          maxLines: 1000
+          derivedFields:
+            - datasourceUid: tempo
+              matcherRegex: "trace_id=(\\w+)"
+              name: TraceID
+              url: '${__value.raw}'
+      
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo-query-frontend:3200
+        jsonData:
+          httpMethod: GET
+          tracesToLogs:
+            datasourceUid: loki
+            tags: ['job', 'instance', 'pod', 'namespace']
+            mappedTags: [{ key: 'service.name', value: 'service' }]
+            mapTagNamesEnabled: true
+            spanStartTimeShift: '1s'
+            spanEndTimeShift: '1s'
+            filterByTraceID: true
+            filterBySpanID: false
+          serviceMap:
+            datasourceUid: prometheus
+          search:
+            hide: false
+          nodeGraph:
+            enabled: true
+```
+
+**Phase 3: Parallel Run & Data Validation (Week 6-7)**
+
+**A. Implemented Dual-Write Strategy:**
+```python
+# log_forwarder.py - Bridge between old and new systems
+import logging
+import requests
+from elasticsearch import Elasticsearch
+
+class DualWriteHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.es_client = Elasticsearch(['http://elasticsearch:9200'])
+        self.loki_url = 'http://loki-gateway:3100/loki/api/v1/push'
+    
+    def emit(self, record):
+        log_entry = self.format(record)
+        
+        # Write to Elasticsearch (old)
+        try:
+            self.es_client.index(
+                index=f"logs-{record.created.strftime('%Y.%m.%d')}",
+                document={
+                    'timestamp': record.created,
+                    'level': record.levelname,
+                    'message': log_entry,
+                    'logger': record.name
+                }
+            )
+        except Exception as e:
+            print(f"Failed to write to Elasticsearch: {e}")
+        
+        # Write to Loki (new)
+        try:
+            loki_payload = {
+                'streams': [{
+                    'stream': {
+                        'job': 'migration-bridge',
+                        'level': record.levelname,
+                        'logger': record.name
+                    },
+                    'values': [[str(int(record.created * 1e9)), log_entry]]
+                }]
+            }
+            requests.post(self.loki_url, json=loki_payload)
+        except Exception as e:
+            print(f"Failed to write to Loki: {e}")
+```
+
+**B. Created Automated Data Validation:**
+```bash
+#!/bin/bash
+# validate_migration.sh
+
+echo "🔍 Validating data consistency between old and new stacks..."
+
+# Compare log volumes
+ES_LOG_COUNT=$(curl -s "http://elasticsearch:9200/_count" | jq '.count')
+LOKI_LOG_COUNT=$(curl -s -G "http://loki-gateway:3100/loki/api/v1/query" \
+  --data-urlencode 'query={job=~".+"}' | jq '.data.result | length')
+
+echo "Elasticsearch logs: $ES_LOG_COUNT"
+echo "Loki logs: $LOKI_LOG_COUNT"
+
+DIFF=$((ES_LOG_COUNT - LOKI_LOG_COUNT))
+DIFF_PERCENT=$((DIFF * 100 / ES_LOG_COUNT))
+
+if [ $DIFF_PERCENT -lt 5 ]; then
+  echo "✅ Log count within acceptable variance (<5%)"
+else
+  echo "❌ Log count difference >5% - investigate!"
+  exit 1
+fi
+
+# Compare trace volumes
+JAEGER_TRACE_COUNT=$(curl -s "http://jaeger-query:16686/api/traces?limit=1" | jq '.data | length')
+TEMPO_TRACE_COUNT=$(curl -s "http://tempo-query-frontend:3200/api/search?limit=1" | jq '.traces | length')
+
+echo "Jaeger traces: $JAEGER_TRACE_COUNT"
+echo "Tempo traces: $TEMPO_TRACE_COUNT"
+
+# Validate specific queries work in both systems
+echo "Testing query equivalence..."
+
+# Old: Elasticsearch
+ES_RESULT=$(curl -s -X POST "http://elasticsearch:9200/logs-*/_search" \
+  -H 'Content-Type: application/json' \
+  -d '{"query": {"match": {"level": "ERROR"}}}' | jq '.hits.total.value')
+
+# New: Loki
+LOKI_RESULT=$(curl -s -G "http://loki-gateway:3100/loki/api/v1/query" \
+  --data-urlencode 'query={level="ERROR"}' | jq '.data.result | length')
+
+echo "ES ERROR logs: $ES_RESULT"
+echo "Loki ERROR logs: $LOKI_RESULT"
+
+echo "✅ Validation complete"
+```
+
+**C. Dashboard Migration Tool:**
+```python
+# migrate_dashboards.py
+import json
+import requests
+
+def migrate_kibana_to_grafana(kibana_dashboard_id):
+    """Convert Kibana dashboard to Grafana format"""
+    
+    # Export from Kibana
+    kibana_export = requests.get(
+        f'http://kibana:5601/api/saved_objects/dashboard/{kibana_dashboard_id}'
+    ).json()
+    
+    # Transform to Grafana format
+    grafana_dashboard = {
+        'dashboard': {
+            'title': kibana_export['attributes']['title'],
+            'panels': []
+        }
+    }
+    
+    # Convert Elasticsearch queries to LogQL
+    for panel in kibana_export['attributes']['panelsJSON']:
+        if 'query' in panel:
+            # Simple conversion (needs refinement for complex queries)
+            es_query = panel['query']
+            logql_query = convert_es_to_logql(es_query)
+            
+            grafana_panel = {
+                'title': panel['title'],
+                'targets': [{
+                    'expr': logql_query,
+                    'datasource': 'Loki'
+                }],
+                'type': 'graph'
+            }
+            grafana_dashboard['dashboard']['panels'].append(grafana_panel)
+    
+    # Import to Grafana
+    response = requests.post(
+        'http://grafana:3000/api/dashboards/db',
+        json=grafana_dashboard,
+        headers={'Authorization': 'Bearer YOUR_API_KEY'}
+    )
+    
+    return response.json()
+
+def convert_es_to_logql(es_query):
+    """Convert Elasticsearch query to LogQL"""
+    # Example conversions:
+    # match: {"level": "ERROR"} → {level="ERROR"}
+    # wildcard: {"message": "*timeout*"} → {message=~".*timeout.*"}
+    
+    logql = '{'
+    for field, value in es_query.get('query', {}).get('match', {}).items():
+        logql += f'{field}="{value}"'
+    logql += '}'
+    
+    return logql
+
+# Migrate all dashboards
+kibana_dashboards = [
+    'api-performance',
+    'application-errors',
+    'infrastructure-health',
+    # ... 80 more dashboards
+]
+
+for dashboard_id in kibana_dashboards:
+    try:
+        result = migrate_kibana_to_grafana(dashboard_id)
+        print(f"✅ Migrated: {dashboard_id}")
+    except Exception as e:
+        print(f"❌ Failed: {dashboard_id} - {e}")
+```
+
+**Phase 4: Application Instrumentation Updates (Week 8-10)**
+
+**A. Updated Services to Send to Tempo:**
+```yaml
+# Before: Jaeger agent sidecar
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        env:
+        - name: JAEGER_AGENT_HOST
+          value: jaeger-agent
+        - name: JAEGER_AGENT_PORT
+          value: "6831"
+
+# After: Direct to Tempo (supports multiple protocols)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://tempo-distributor:4317
+        - name: OTEL_SERVICE_NAME
+          value: payment-service
+        - name: OTEL_TRACES_SAMPLER
+          value: parentbased_traceidratio
+        - name: OTEL_TRACES_SAMPLER_ARG
+          value: "0.1"  # Sample 10% of traces
+```
+
+**B. Application Code Updates (Python example):**
+```python
+# old_tracing.py - Jaeger
+from jaeger_client import Config
+
+config = Config(
+    config={'sampler': {'type': 'const', 'param': 1}},
+    service_name='payment-service'
+)
+tracer = config.initialize_tracer()
+
+# new_tracing.py - OpenTelemetry (works with Tempo)
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+# Configure OpenTelemetry
+trace.set_tracer_provider(TracerProvider())
+otlp_exporter = OTLPSpanExporter(endpoint="tempo-distributor:4317", insecure=True)
+span_processor = BatchSpanProcessor(otlp_exporter)
+trace.get_tracer_provider().add_span_processor(span_processor)
+
+tracer = trace.get_tracer(__name__)
+
+# Usage remains similar
+with tracer.start_as_current_span("process_payment") as span:
+    span.set_attribute("payment.amount", 100.00)
+    # ... payment logic
+```
+
+**C. Gradual Service Rollout:**
+```bash
+# Week 8: Non-critical services (5 services)
+kubectl set env deployment/report-service OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo-distributor:4317
+kubectl set env deployment/notification-service OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo-distributor:4317
+
+# Week 9: Medium-priority services (15 services)
+for svc in user-service order-service inventory-service; do
+  kubectl set env deployment/$svc OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo-distributor:4317
+done
+
+# Week 10: Critical services (5 services) - careful rollout
+kubectl set env deployment/payment-service OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo-distributor:4317
+# Monitor for 24h before next service
+kubectl set env deployment/api-gateway OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo-distributor:4317
+```
+
+**Phase 5: Training & Documentation (Week 8-12)**
+
+**A. Created Comprehensive Documentation:**
+```markdown
+# Unified Observability Guide
+
+## Quick Start
+- **Metrics:** Grafana → Prometheus data source
+- **Logs:** Grafana → Loki data source  
+- **Traces:** Grafana → Tempo data source
+
+## Query Language Cheat Sheet
+
+### Elasticsearch → LogQL
+| Elasticsearch | LogQL |
+|---------------|-------|
+| `level:ERROR` | `{level="ERROR"}` |
+| `message:timeout AND service:api` | `{service="api"} \|= "timeout"` |
+| Aggregation: count by service | `sum by(service) (count_over_time({job=~".+"}[5m]))` |
+
+### Jaeger UI → Tempo
+| Jaeger | Tempo (in Grafana) |
+|--------|---------------------|
+| Search by service | Tempo → Search → Service: `api-gateway` |
+| Trace ID lookup | Tempo → Query: `{trace_id="abc123"}` |
+| Duration filter | Tempo → Search → Min/Max duration |
+
+## Correlation Workflow
+1. Alert fires in Prometheus → Open in Grafana
+2. Click "Explore" → See metrics spike
+3. Click "Split" → Add Loki data source
+4. Enter: `{namespace="prod"} |= "ERROR"` around same timeframe
+5. Click on log line with trace_id
+6. Grafana auto-links to Tempo trace view
+7. See full distributed trace with spans
+```
+
+**B. Ran Training Sessions:**
+- Week 8-9: 8 workshops (1 per team) - 2 hours each
+- Week 10: Office hours - daily 1-hour sessions
+- Week 11: Advanced LogQL workshop
+- Week 12: Troubleshooting patterns workshop
+
+**Phase 6: Cutover & Decommission (Week 13-14)**
+
+**A. Cutover Checklist:**
+```bash
+#!/bin/bash
+# cutover_checklist.sh
+
+echo "🔄 Pre-Cutover Validation Checklist"
+
+# 1. Verify new stack health
+echo "Checking Prometheus..."
+curl -f http://prometheus:9090/-/healthy || exit 1
+
+echo "Checking Loki..."
+curl -f http://loki-gateway:3100/ready || exit 1
+
+echo "Checking Tempo..."
+curl -f http://tempo-query-frontend:3200/ready || exit 1
+
+echo "Checking Grafana..."
+curl -f http://grafana:3000/api/health || exit 1
+
+# 2. Verify data volumes are equivalent
+echo "Validating data consistency..."
+./validate_migration.sh || exit 1
+
+# 3. Verify all critical dashboards migrated
+GRAFANA_DASHBOARDS=$(curl -s http://grafana:3000/api/search | jq 'length')
+if [ $GRAFANA_DASHBOARDS -lt 80 ]; then
+  echo "❌ Expected 80+ dashboards, found $GRAFANA_DASHBOARDS"
+  exit 1
+fi
+
+# 4. Verify alerts are firing in new system
+ACTIVE_ALERTS=$(curl -s http://prometheus:9090/api/v1/alerts | jq '.data.alerts | length')
+echo "Active alerts: $ACTIVE_ALERTS"
+
+# 5. Test correlation (metric → log → trace)
+echo "Testing data correlation..."
+# ... test queries
+
+echo "✅ Cutover checklist passed!"
+```
+
+**B. Communication Plan:**
+```markdown
+# Cutover Communication
+
+**Timeline:**
+- Friday 6 PM: Stop new data to old systems
+- Friday 6-8 PM: Final validation
+- Friday 8 PM: Update DNS/configs to point to new stack
+- Friday 8-10 PM: Monitor for issues
+- Saturday 9 AM: Team review
+
+**Rollback Plan:**
+- Old systems remain running (read-only) for 7 days
+- DNS change can be reverted in 5 minutes
+- All dashboards bookmarked with old URLs
+
+**Support:**
+- On-call SRE: [phone number]
+- Slack: #observability-migration
+- War room: Zoom link
+```
+
+**C. Decommission Old Systems:**
+```bash
+# Week 13: Read-only mode
+kubectl scale deployment elasticsearch --replicas=1  # Reduce to minimum
+kubectl scale deployment logstash --replicas=0  # Stop ingestion
+kubectl scale deployment jaeger-collector --replicas=0
+
+# Week 14: Data export for compliance
+./export_elk_data.sh --retention=90days --destination=s3://compliance-archive/
+
+# Week 15: Delete resources
+kubectl delete namespace elk-stack
+kubectl delete namespace jaeger
+helm uninstall datadog
+```
+
+### **Result**
+The unified observability migration delivered transformative improvements across all dimensions:
+
+**Migration Success Metrics:**
+- **Completed in 87 days** (3 days ahead of 90-day deadline)
+- **Zero data loss** - 100% of logs, metrics, and traces preserved
+- **Zero incidents** caused by migration - maintained 99.95% uptime during transition
+- **Zero rollbacks** needed - first-time-right execution
+
+**Cost Reduction Achieved:**
+```
+Previous monthly cost: $18,000
+- Prometheus: $2,500
+- ELK Stack: $6,500
+- Jaeger: $1,500
+- Datadog: $4,500
+- Splunk: $3,200
+
+New unified cost: $11,800
+- Prometheus + Thanos: $3,000
+- Loki: $4,200
+- Tempo: $2,600
+- Grafana Enterprise: $2,000
+
+Savings: $6,200/month (34.4% reduction)
+Annual savings: $74,400
+```
+
+**Performance Improvements:**
+- **Query speed:** 8s avg → 2.3s avg (71% faster)
+- **Log search:** 15s → 3s (80% faster with Loki's indexed labels)
+- **Trace lookup:** 5s → 1.2s (76% faster)
+- **Dashboard load time:** 12s → 4s (67% faster)
+
+**Operational Efficiency:**
+- **MTTR reduced:** 52 minutes → 18 minutes (65% improvement)
+  - Single UI eliminated context switching
+  - Correlation reduced investigation time
+  - Better query language (LogQL) more efficient than Elasticsearch DSL
+  
+- **Alert accuracy improved:** 67% → 94% (+27%)
+  - Unified alerting rules in Prometheus
+  - Better correlation reduced false positives
+  
+- **On-call efficiency:** +40%
+  - Engineers no longer need to learn 4 tools
+  - Single runbook for troubleshooting
+  - Faster onboarding (2 weeks → 3 days)
+
+**User Adoption:**
+- **65 engineers trained** across 8 teams
+- **Post-training survey:** 89% satisfaction rate
+- **Active users:** 100% of engineering team using Grafana daily (vs 45% using old tools)
+- **Dashboard creation:** 35 new dashboards created in first month (vs 2/month average before)
+
+**Technical Wins:**
+- **Correlation capability:** Click from metric → see related logs → trace to slow span (impossible before)
+- **Unified query language:** LogQL adopted quickly (87% proficiency within 2 weeks)
+- **Single sign-on:** Integrated with corporate SSO (vs 4 separate logins before)
+- **API consistency:** All tools expose APIs, enabling automation
+
+**Data Quality:**
+- **Log retention compliance:** 90 days maintained (regulatory requirement)
+- **Trace sampling intelligent:** 10% sampling with smart algorithms (vs 100% or manual before)
+- **Metrics cardinality controlled:** Governance from day one (prevented cost explosion)
+
+**Decommissioning Success:**
+- **ELK stack:** Decommissioned Week 15 (saved $6,500/month)
+- **Jaeger:** Decommissioned Week 14 (saved $1,500/month)
+- **Datadog:** Cancelled Week 13 (saved $4,500/month)
+- **Splunk:** Cancelled Week 16 (saved $3,200/month)
+- **Compliance archives:** 90 days of audit logs exported to S3 (legal requirement met)
+
+**Unexpected Benefits:**
+1. **Developer productivity:** Engineers spend 30% less time debugging (better tools)
+2. **Incident postmortems:** Automated data collection (Grafana snapshots with all 3 signals)
+3. **Capacity planning:** Better long-term trends (Thanos 1-year retention)
+4. **Security:** Centralized audit logging, easier compliance reporting
+5. **Innovation:** Teams building custom integrations (unified API)
+
+**Key Learnings Documented:**
+1. **Parallel run is essential** - 2 weeks of dual-write caught 17 edge cases
+2. **Automated validation catches what humans miss** - found 3 data inconsistencies
+3. **Training can't be rushed** - invested 160 hours total, paid off immediately
+4. **Dashboard migration is hardest part** - 40% of project effort, plan accordingly
+5. **Rollback plan gives confidence** - we didn't need it, but having it reduced stress
+
+**Cultural Impact:**
+- **Observability-first mindset:** Teams now instrument before deploying
+- **Shared ownership:** Central SRE team + embedded team champions model
+- **Knowledge sharing:** Monthly "Observability Office Hours" with 30+ attendees
+- **Documentation culture:** Runbooks now include Grafana dashboard links
+
+**Follow-up Improvements (3 Months Post-Migration):**
+- **Service Level Objectives (SLOs):** Implemented for 15 critical services
+- **Alerting maturity:** 94% precision (from 67% pre-migration)
+- **Custom dashboards:** 120 team-specific dashboards created
+- **Grafana adoption:** 100% of engineers use daily (vs 45% before)
+
+**Business Impact Presented to Leadership:**
+> "The unified observability migration delivered $74K annual savings while reducing mean time to resolution by 65%. Engineers now troubleshoot in a single tool instead of four, and can correlate metrics, logs, and traces with one click. We've seen 30% developer productivity improvement in incident response, and 100% adoption across 65 engineers. The project completed ahead of schedule with zero service impact."
+
+**Six-Month Retrospective:**
+- **Cost savings sustained:** Still at $11,800/month (no creep)
+- **MTTR improved further:** Now 15 minutes (from 18 at migration)
+- **New capabilities enabled:** 
+  - Distributed tracing adoption: 3 services → 45 services
+  - SLO dashboards for all tier-1 services
+  - Automated incident reports with Grafana snapshots
+- **Team satisfaction:** 92% would "strongly recommend" new stack
+
+This migration transformed observability from a fragmented toolset into a strategic advantage. When we had a major database outage 4 months later, the team identified the root cause in 8 minutes using unified correlation (metric spike → error logs → slow database trace spans). The CTO cited this incident as proof that the migration delivered beyond expectations.
+
+---
+
+## Scenario 7: Build MTTR/MTBF Tracking Dashboard
+
+### **Situation**
+Our VP of Engineering requested a quarterly business review presentation showing "how we're improving reliability over time." However, we had no systematic way to track Mean Time To Recovery (MTTR) or Mean Time Between Failures (MTBF). Incident data was scattered across Jira tickets, PagerDuty alerts, Slack threads, and manual spreadsheets that different teams maintained inconsistently. When asked "What's our average MTTR?", we couldn't confidently answer. Leadership wanted quantifiable proof that our SRE investments were reducing incident impact, but we lacked the instrumentation to demonstrate it. This was particularly critical because we were requesting budget for additional SRE headcount, and needed data to justify the ROI.
+
+### **Task**
+As the SRE team lead, I needed to:
+- Design and implement automated MTTR/MTBF tracking without manual data entry
+- Create executive-friendly dashboards showing reliability trends over time
+- Backfill historical data for 6 months to show improvement trajectory
+- Integrate with existing incident management workflow (PagerDuty + Jira)
+- Provide both real-time visibility and historical trend analysis
+- Enable drill-down from aggregate metrics to individual incidents
+
+### **Action**
+I implemented a comprehensive incident metrics tracking system integrating multiple data sources:
+
+**Step 1: Define Incident Lifecycle & Metrics (Week 1)**
+
+**A. Standardized Incident States:**
+```
+Incident Lifecycle:
+1. Detected (alert fires in Prometheus/PagerDuty)
+2. Acknowledged (engineer accepts page)
+3. Investigating (triage in progress)
+4. Mitigating (fix being deployed)
+5. Resolved (service restored)
+6. Closed (postmortem complete)
+
+Key Timestamps:
+- T0: Incident start (service degradation begins)
+- T1: Detection (alert fires)
+- T2: Acknowledgment (engineer responds)
+- T3: Mitigation start (fix identified)
+- T4: Resolution (service restored)
+- T5: Closure (postmortem done)
+
+Metrics:
+- MTTD (Mean Time To Detect) = T1 - T0
+- MTTA (Mean Time To Acknowledge) = T2 - T1
+- MTTR (Mean Time To Recover) = T4 - T1
+- MTTF (Mean Time To Failure) = time between T0 events
+- MTBF (Mean Time Between Failures) = time between T4 events
+```
+
+**B. Incident Severity Classification:**
+```yaml
+severity_levels:
+  SEV1:
+    description: "Complete service outage"
+    slo_impact: ">1% error budget"
+    example: "API gateway down, payment processing failed"
+    
+  SEV2:
+    description: "Partial service degradation"
+    slo_impact: "0.1-1% error budget"
+    example: "High latency, some features unavailable"
+    
+  SEV3:
+    description: "Minor degradation"
+    slo_impact: "<0.1% error budget"
+    example: "Non-critical feature slow"
+    
+  SEV4:
+    description: "No customer impact"
+    slo_impact: "None"
+    example: "Internal tool issue"
+```
+
+**Step 2: Implement Automated Incident Tracking (Week 2-3)**
+
+**A. Created Prometheus Recording Rules:**
+```yaml
+# incident_tracking.yml
+groups:
+  - name: incident_metrics
+    interval: 1m
+    rules:
+      # Track active incidents
+      - record: incident:active:count
+        expr: |
+          count(ALERTS{alertstate="firing", severity=~"critical|warning"}) OR vector(0)
+      
+      # Track incident duration in real-time
+      - record: incident:duration_seconds:active
+        expr: |
+          time() - (
+            max by(alertname) (
+              ALERTS_FOR_STATE{alertstate="firing"}
+            )
+          )
+      
+      # Track time to acknowledge
+      - record: incident:time_to_ack_seconds
+        expr: |
+          (
+            timestamp(ALERTS{alertstate="firing", ack_time!=""}) 
+            - 
+            ALERTS_FOR_STATE{alertstate="firing"}
+          )
+      
+      # Count incidents by severity
+      - record: incident:count_by_severity
+        expr: |
+          count by(severity) (
+            changes(ALERTS{alertstate="firing"}[24h]) > 0
+          )
+      
+      # Calculate MTTR over rolling windows
+      - record: incident:mttr_seconds:24h
+        expr: |
+          avg_over_time(
+            (
+              timestamp(ALERTS{alertstate="resolved"}) 
+              - 
+              ALERTS_FOR_STATE{alertstate="firing"}
+            )[24h:]
+          )
+      
+      - record: incident:mttr_seconds:7d
+        expr: |
+          avg_over_time(incident:duration_seconds:active[7d])
+      
+      - record: incident:mttr_seconds:30d
+        expr: |
+          avg_over_time(incident:duration_seconds:active[30d])
+      
+      # Calculate MTBF (time between incidents)
+      - record: incident:mtbf_seconds:30d
+        expr: |
+          (30 * 24 * 3600) / (
+            count(changes(ALERTS{alertstate="firing", severity="critical"}[30d]) > 0) OR vector(1)
+          )
+      
+      # Incident frequency
+      - record: incident:frequency:24h
+        expr: |
+          count(changes(ALERTS{alertstate="firing"}[24h]) > 0) / 2
+      
+      - record: incident:frequency:7d
+        expr: |
+          count(changes(ALERTS{alertstate="firing"}[7d]) > 0) / 2 / 7
+```
+
+**B. PagerDuty Integration for Acknowledgment Tracking:**
+```python
+# pagerduty_exporter.py - Custom exporter
+from prometheus_client import start_http_server, Gauge, Counter
+import pdpyras
+import time
+
+# Metrics
+incident_ack_time = Gauge('pagerduty_incident_ack_time_seconds', 
+                          'Time from incident creation to acknowledgment',
+                          ['severity', 'service'])
+incident_resolution_time = Gauge('pagerduty_incident_resolution_time_seconds',
+                                'Time from incident creation to resolution',
+                                ['severity', 'service'])
+incidents_total = Counter('pagerduty_incidents_total',
+                         'Total incidents',
+                         ['severity', 'service'])
+
+def collect_pagerduty_metrics():
+    session = pdpyras.APISession
